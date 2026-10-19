@@ -2,6 +2,7 @@ import { Link, router, useHttp, usePage } from '@inertiajs/react';
 import {
     ChevronDown,
     CornerDownRight,
+    ListTree,
     MessageSquareReply,
     Trash2,
 } from 'lucide-react';
@@ -25,6 +26,7 @@ import { CommitPastelButton } from '@/components/commit-pastel-button';
 import { CommitSecondaryActions } from '@/components/commit-secondary-actions';
 import { CommitStarButton } from '@/components/commit-star-button';
 import { CommitStatusBadge } from '@/components/commit-status-badge';
+import { useCommitTranslation } from '@/components/commit-translation';
 import {
     ComposerPreviewBody,
     PreviewToggle,
@@ -137,10 +139,16 @@ async function fetchReplies(
     cursor: string | null,
     newest = false,
     limit = 50,
+    except?: string,
 ): Promise<CursorPaginated<ThreadCommit>> {
     const response = await fetch(
         CommitReplyController.index(commit, {
-            query: { cursor, newest: newest ? 1 : 0, limit },
+            query: {
+                cursor,
+                newest: newest ? 1 : 0,
+                limit,
+                ...(except ? { except } : {}),
+            },
         }).url,
         {
             headers: {
@@ -161,13 +169,20 @@ async function fetchRepliesUntil(
     commit: ThreadCommit,
     minimum: number,
     newest = false,
+    except?: string,
 ): Promise<CursorPaginated<ThreadCommit>> {
-    const page = await fetchReplies(commit, null, newest, newest ? 1 : 50);
+    const page = await fetchReplies(
+        commit,
+        null,
+        newest,
+        newest ? 1 : 50,
+        except,
+    );
     let data = page.data;
     let cursor = page.next_cursor;
 
     while (cursor !== null && data.length < minimum) {
-        const next = await fetchReplies(commit, cursor, newest);
+        const next = await fetchReplies(commit, cursor, newest, 50, except);
         data = [...data, ...next.data];
         cursor = next.next_cursor;
     }
@@ -179,8 +194,12 @@ export function useThread(
     commit: ThreadCommit,
     initialReplies?: CursorPaginated<ThreadCommit>,
     loadsReplies = false,
+    exceptReplyId?: string,
 ): Thread {
     const preview = !isDeleted(commit) ? commit.reply_preview : undefined;
+    const except =
+        exceptReplyId ??
+        (isDeleted(commit) ? undefined : (commit.continuation_id ?? undefined));
     const isPreview = preview !== undefined;
     const initial = preview ?? initialReplies;
     const [replies, setReplies] = useState<ThreadCommit[] | null>(
@@ -233,7 +252,7 @@ export function useThread(
 
         setIsLoading(true);
 
-        fetchRepliesUntil(commit, minimum, isPreview)
+        fetchRepliesUntil(commit, minimum, isPreview, except)
             .then((page) => applyPage(page.data, page.next_cursor))
             .catch(() => undefined)
             .finally(() => setIsLoading(false));
@@ -248,7 +267,13 @@ export function useThread(
 
         let isCurrent = true;
 
-        fetchReplies({ id: commitId }, null, isPreview, isPreview ? 1 : 50)
+        fetchReplies(
+            { id: commitId },
+            null,
+            isPreview,
+            isPreview ? 1 : 50,
+            except,
+        )
             .then((page) => {
                 if (isCurrent) {
                     setReplies(page.data);
@@ -260,7 +285,21 @@ export function useThread(
         return () => {
             isCurrent = false;
         };
-    }, [commitId, shouldLoadReplies, isPreview]);
+    }, [commitId, shouldLoadReplies, isPreview, except]);
+
+    const onExceptChanged = useEffectEvent(() => {
+        if (replies !== null && !shouldLoadReplies) {
+            reload();
+        }
+    });
+
+    const loadedExcept = useRef(except);
+    useEffect(() => {
+        if (loadedExcept.current !== except) {
+            loadedExcept.current = except;
+            onExceptChanged();
+        }
+    }, [except]);
 
     const onRestored = useEffectEvent((restored: Commit) => {
         changedThreadIds.add(commit.id);
@@ -314,7 +353,7 @@ export function useThread(
 
             setIsLoading(true);
 
-            fetchReplies(commit, nextCursor, isPreview)
+            fetchReplies(commit, nextCursor, isPreview, 50, except)
                 .then((page) =>
                     applyPage([...replies, ...page.data], page.next_cursor),
                 )
@@ -336,6 +375,24 @@ export function useThread(
             reload();
         },
     };
+}
+
+export function ShowThreadLink({ commit }: { commit: Commit }) {
+    if (!commit.continuation_id) {
+        return null;
+    }
+
+    return (
+        <Link
+            href={CommitController.show({ user: commit.user, commit })}
+            className="mt-2 -ml-2 flex w-fit items-center gap-1 rounded-md px-2 py-0.5 text-[13px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            aria-label={`Show thread by @${commit.user.username}`}
+            data-test="show-thread-link"
+        >
+            <ListTree className="size-4" aria-hidden />
+            Show thread
+        </Link>
+    );
 }
 
 export function ThreadActions({
@@ -380,7 +437,9 @@ export function ThreadActions({
                                 data-test="reply-button"
                             >
                                 <MessageSquareReply className="size-4" />
-                                Reply
+                                <span className="sr-only sm:not-sr-only">
+                                    Reply
+                                </span>
                                 {hasStash && !thread.isReplying && (
                                     <span
                                         title="You have an unsent reply here"
@@ -729,6 +788,7 @@ function CommitReply({
 }) {
     const { auth } = usePage().props;
     const now = useNow();
+    const { bodyRef, ...translation } = useCommitTranslation(reply);
     const [isConfirming, setIsConfirming] = useState(false);
     const request = useHttp<Record<string, never>, { deleted: DeletedFlash }>(
         {},
@@ -872,12 +932,15 @@ function CommitReply({
                         </p>
                     )}
 
-                    <FoldedCommitBody
-                        segments={reply.body_segments}
-                        mentions={reply.mentions}
-                        previewSegments={reply.preview_segments}
-                        className="text-[15px]"
-                    />
+                    <div ref={bodyRef} style={translation.bodyStyle}>
+                        <FoldedCommitBody
+                            segments={translation.segments}
+                            mentions={reply.mentions}
+                            previewSegments={translation.previewSegments}
+                            className="text-[15px]"
+                        />
+                    </div>
+                    {translation.notice}
                     <CommitImages commit={reply} />
                     {reply.link_preview && (
                         <LinkPreview
@@ -887,6 +950,7 @@ function CommitReply({
                             preview={reply.link_preview}
                         />
                     )}
+                    <ShowThreadLink commit={reply} />
 
                     {isConfirming ? (
                         <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md bg-destructive/8 px-3 py-1.5 text-sm">
@@ -923,6 +987,7 @@ function CommitReply({
                                         commit={reply}
                                         className="px-2 py-0.5"
                                     />
+                                    {translation.button}
                                 </>
                             }
                         />
@@ -1163,7 +1228,7 @@ function ReplyComposer({
                     type="submit"
                     size="sm"
                     disabled={processing || !isReplyable}
-                    className="min-w-[4.75rem]"
+                    className="min-w-19"
                     data-test="submit-reply-button"
                 >
                     {processing ? 'Replying…' : 'Reply'}

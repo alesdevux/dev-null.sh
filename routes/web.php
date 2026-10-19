@@ -9,6 +9,7 @@ use App\Http\Controllers\BrandController;
 use App\Http\Controllers\ChangelogController;
 use App\Http\Controllers\Cli\ScriptController;
 use App\Http\Controllers\CommitApprovalController;
+use App\Http\Controllers\CommitContinuationController;
 use App\Http\Controllers\CommitController;
 use App\Http\Controllers\CommitImageController;
 use App\Http\Controllers\CommitLinkPreviewController;
@@ -27,6 +28,7 @@ use App\Http\Controllers\CommitSitemapController;
 use App\Http\Controllers\CommitStarController;
 use App\Http\Controllers\CommitStarCountController;
 use App\Http\Controllers\CommitStatusController;
+use App\Http\Controllers\CommitTranslationController;
 use App\Http\Controllers\ConversationArchiveController;
 use App\Http\Controllers\ConversationController;
 use App\Http\Controllers\ConversationDropController;
@@ -34,6 +36,7 @@ use App\Http\Controllers\ConversationMergeController;
 use App\Http\Controllers\ConversationMessageController;
 use App\Http\Controllers\ConversationReadController;
 use App\Http\Controllers\ConversationTypingController;
+use App\Http\Controllers\DeviceController;
 use App\Http\Controllers\ExportController;
 use App\Http\Controllers\FailedJobController;
 use App\Http\Controllers\FailedJobRetryController;
@@ -45,6 +48,8 @@ use App\Http\Controllers\MentionController;
 use App\Http\Controllers\MentionSuggestionController;
 use App\Http\Controllers\MessageImageController;
 use App\Http\Controllers\MessageLinkPreviewController;
+use App\Http\Controllers\MessageReactionController;
+use App\Http\Controllers\MobileAuthorizationController;
 use App\Http\Controllers\ModerationController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\NotificationGroupController;
@@ -191,6 +196,8 @@ Route::get('commits/{commit}/status', [CommitStatusController::class, 'show'])
 Route::get('commits/{commit}/replies', [CommitReplyController::class, 'index'])
     ->withTrashed()
     ->name('commit-reply.index');
+Route::get('commits/{commit}/continuation', [CommitContinuationController::class, 'index'])
+    ->name('commit-continuation.index');
 
 // Search...
 Route::get('search', [SearchController::class, 'index'])
@@ -240,6 +247,9 @@ Route::middleware('auth')->group(function (): void {
         ->name('commit.store');
     Route::post('commits/preview', [CommitPreviewController::class, 'store'])
         ->name('commit-preview.store');
+    Route::post('commits/{commit}/translation', [CommitTranslationController::class, 'store'])
+        ->middleware('throttle:10,1')
+        ->name('commit-translation.store');
     Route::delete('commits/{commit}', [CommitController::class, 'destroy'])
         ->name('commit.destroy');
     Route::post('commits/{commit}/restoration', [CommitRestorationController::class, 'store'])
@@ -314,6 +324,13 @@ Route::middleware('auth')->group(function (): void {
         Route::get('remotes/messages/{message}/link-preview', [MessageLinkPreviewController::class, 'show'])
             ->whereNumber('message')
             ->name('message-link-preview.show');
+        Route::get('remotes/reactions', [MessageReactionController::class, 'index'])->name('message-reaction.index');
+        Route::post('remotes/messages/{message}/reactions', [MessageReactionController::class, 'store'])
+            ->whereNumber('message')
+            ->name('message-reaction.store');
+        Route::delete('remotes/messages/{message}/reactions', [MessageReactionController::class, 'destroy'])
+            ->whereNumber('message')
+            ->name('message-reaction.destroy');
     });
 
     Route::post('remotes/@{partner:username}/messages', [ConversationMessageController::class, 'store'])
@@ -376,6 +393,16 @@ Route::middleware('auth')->group(function (): void {
 
     // Safety...
     Route::get('settings/safety', [SafetyController::class, 'edit'])->name('safety.edit');
+
+    // Devices...
+    Route::get('settings/devices', [DeviceController::class, 'index'])->name('device.index');
+    Route::delete('settings/devices/{device}', [DeviceController::class, 'destroy'])->name('device.destroy');
+
+    // Mobile Authorization...
+    Route::get('mobile/authorize', [MobileAuthorizationController::class, 'show'])->name('mobile-authorization.show');
+    Route::post('mobile/authorize', [MobileAuthorizationController::class, 'store'])
+        ->middleware('throttle:mobile-authorizations')
+        ->name('mobile-authorization.store');
 
     // User...
     Route::delete('user', [UserController::class, 'destroy'])->name('user.destroy');

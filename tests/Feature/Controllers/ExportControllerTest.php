@@ -2,11 +2,14 @@
 
 declare(strict_types=1);
 
+use App\Actions\CreateCommitTranslation;
 use App\Actions\DeleteUser;
+use App\Ai\Agents\CommitTranslator;
 use App\Enums\NotificationType;
 use App\Models\Bookmark;
 use App\Models\Commit;
 use App\Models\CommitImage;
+use App\Models\Device;
 use App\Models\Notification;
 use App\Models\Poll;
 use App\Models\PollVote;
@@ -110,6 +113,7 @@ it('downloads a versioned private JSON file with an explicit profile and empty l
         'messages' => [],
         'notifications' => [],
         'ssh_keys' => [],
+        'devices' => [],
         'sessions' => [],
     ]);
     expect($response->streamedContent())->not->toContain('never-export-this-token')
@@ -142,6 +146,9 @@ it('exports all the signed-in users commits including replies, deleted ones, and
     $otherReply = Commit::factory()->for($other)->create(['parent_id' => $approved->id, 'body' => 'Another developer reply body']);
     Commit::factory()->for($other)->pending()->create();
 
+    CommitTranslator::fake([['source_language' => 'en', 'body' => 'Unicode-ondersteuning geleverd 🚀']]);
+    resolve(CreateCommitTranslation::class)->handle($approved, 'nl');
+
     $response = $this->actingAs($user)->get(route('export', ['user_id' => $other->id]));
     $data = json_decode($response->streamedContent(), true, flags: JSON_THROW_ON_ERROR);
     $commits = collect($data['commits'])->keyBy('id');
@@ -154,6 +161,11 @@ it('exports all the signed-in users commits including replies, deleted ones, and
         'parent_id' => null,
         'quoted_commit_id' => null,
         'body' => $approved->body,
+        'cached_translations' => [
+            'source_language' => 'en',
+            'translations' => ['nl' => 'Unicode-ondersteuning geleverd 🚀'],
+            'expires_at' => now()->addDays(7)->getTimestamp(),
+        ],
         'status' => 'approved',
         'pasteis_count' => 3,
         'images' => [],
@@ -347,6 +359,22 @@ it('exports ssh key fingerprints and sessions without session ids or payloads', 
         ->and($response->streamedContent())->not->toContain(
             'secret-session-id', 'secret-session-payload', 'other-session-id', '198.51.100.9', $otherKey->fingerprint,
         );
+});
+
+it('exports the devices approved for the app, oldest first', function (): void {
+    $user = User::factory()->create();
+    $older = Device::factory()->for($user)->create(['name' => 'devnull on iPad', 'approved_at' => now()->subWeek(), 'last_used_at' => now()->subDay()]);
+    $newer = Device::factory()->for($user)->create(['name' => 'devnull on iPhone', 'approved_at' => now()->subDay()]);
+    $other = Device::factory()->create();
+
+    $response = $this->actingAs($user)->get(route('export'));
+    $data = json_decode($response->streamedContent(), true, flags: JSON_THROW_ON_ERROR);
+
+    expect($data['devices'])->toBe([
+        ['name' => 'devnull on iPad', 'fingerprint' => $older->fingerprint, 'approved_at' => now()->subWeek()->toIso8601String(), 'last_used_at' => now()->subDay()->toIso8601String()],
+        ['name' => 'devnull on iPhone', 'fingerprint' => $newer->fingerprint, 'approved_at' => now()->subDay()->toIso8601String(), 'last_used_at' => null],
+    ])
+        ->and($response->streamedContent())->not->toContain($other->fingerprint);
 });
 
 it('exports all records across chunk boundaries without omissions or duplicates', function (): void {
